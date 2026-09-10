@@ -406,6 +406,9 @@
       <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="var(--muted)" stroke-width="1.6"><path d="M9 5l7 7-7 7"/></svg></div>
     <div class="row"><div class="lab"><b>펼침면 좌우 분할</b><span>한 장에 두 쪽이 들어있는 스캔을 반으로 자릅니다</span></div><div class="sw on" id="swSplit"></div></div>
     <div class="row"><div class="lab"><b>긴 스크린샷 자동 분리</b><span>세로로 이어진 캡처에서 펼침면마다 잘라냅니다</span></div><div class="sw on" id="swSeg"></div></div>
+    <div class="row"><div class="lab"><b>쪽 크기 통일</b><span>모든 쪽을 같은 크기로 맞춰 넘길 때 흔들리지 않게 합니다</span></div><div class="sw on" id="swSame"></div></div>
+    <div class="row"><div class="lab"><b>기울기 자동 보정</b><span>비뚤게 찍힌 쪽의 글줄을 수평으로 돌려놓습니다</span></div><div class="sw on" id="swSkew"></div></div>
+    <div class="row"><div class="lab"><b>밝기 고르게</b><span>한쪽만 흐린 복사본의 명암을 평평하게 폅니다</span></div><div class="sw on" id="swEven"></div></div>
     <div class="row"><div class="lab"><b>여백 잘라내기</b><span>흰 테두리를 없애 글씨를 크게 봅니다</span></div><div class="sw on" id="swTrim"></div></div>
     <div class="row" style="display:block">
       <div class="lab" style="margin-bottom:6px"><b>자르는 위치</b><span>좌우 쪽 경계가 어긋나면 조절하세요</span></div>
@@ -440,7 +443,7 @@ const S={
   sheets:[],           // 원본 캔버스 (세션 한정)
   idx:0,
   marks:new Map(),     // idx -> note
-  opt:{split:true,seg:true,trim:true,pos:50,contrast:128},
+  opt:{split:true,seg:true,trim:true,pos:50,contrast:128,same:true,deskew:true,even:true},
   zoom:1,pan:{x:0,y:0},
   saved:false,
   id:null,             // 현재 책 id
@@ -712,25 +715,129 @@ function cut(cv,box){
   g.drawImage(cv,b.x,b.y,b.w,b.h,0,0,o.width,o.height);
   return o;
 }
-function derive(sheets){
-  const pages=[];
-  sheets.forEach(cv=>{
+const tick=()=>new Promise(r=>setTimeout(r,0));
+
+function grayOf(cv,W){
+  W=Math.min(W,cv.width);
+  const H=Math.max(1,Math.round(cv.height*W/cv.width));
+  const d=toCanvas(cv,W,H).getContext("2d").getImageData(0,0,W,H).data;
+  const g=new Float32Array(W*H);
+  for(let i=0,p=0;i<d.length;i+=4,p++)g[p]=d[i]*.299+d[i+1]*.587+d[i+2]*.114;
+  return {g,W,H};
+}
+// 글줄이 가장 반듯해지는 각도를 찾아 되돌림
+function deskew(cv){
+  const {g,W,H}=grayOf(cv,420);
+  const ink=new Uint8Array(W*H);
+  for(let i=0;i<g.length;i++)ink[i]=g[i]<175?1:0;
+  let best=0,bs=-1;
+  for(let deg=-3;deg<=3.001;deg+=0.4){
+    const t=Math.tan(deg*Math.PI/180),prof=new Float32Array(H);
+    for(let x=0;x<W;x++){
+      const dy=Math.round((x-W/2)*t);
+      for(let y=0;y<H;y++){
+        const yy=y+dy;if(yy<0||yy>=H)continue;
+        prof[y]+=ink[yy*W+x];
+      }
+    }
+    let sc=0;for(let y=1;y<H;y++){const d=prof[y]-prof[y-1];sc+=d*d}
+    if(sc>bs){bs=sc;best=deg}
+  }
+  if(Math.abs(best)<0.45)return cv;
+  const r=-best*Math.PI/180;
+  const w=cv.width,h=cv.height;
+  const nw=Math.ceil(Math.abs(w*Math.cos(r))+Math.abs(h*Math.sin(r)));
+  const nh=Math.ceil(Math.abs(w*Math.sin(r))+Math.abs(h*Math.cos(r)));
+  const o=document.createElement("canvas");o.width=nw;o.height=nh;
+  const c=o.getContext("2d");
+  c.fillStyle="#fff";c.fillRect(0,0,nw,nh);
+  c.translate(nw/2,nh/2);c.rotate(r);c.drawImage(cv,-w/2,-h/2);
+  return o;
+}
+// 배경 밝기를 격자로 재서 나눠줌 — 흐린 부분이 같이 살아남
+function flatten(cv){
+  const w=cv.width,h=cv.height;
+  const o=document.createElement("canvas");o.width=w;o.height=h;
+  const g=o.getContext("2d");g.drawImage(cv,0,0);
+  const im=g.getImageData(0,0,w,h),d=im.data;
+  const cell=Math.max(28,Math.round(w/26));
+  const cx=Math.ceil(w/cell),cy=Math.ceil(h/cell);
+  const bg=new Float32Array(cx*cy);
+  for(let j=0;j<cy;j++)for(let i=0;i<cx;i++){
+    let mx=0;
+    for(let y=j*cell;y<Math.min(h,(j+1)*cell);y+=3)
+      for(let x=i*cell;x<Math.min(w,(i+1)*cell);x+=3){
+        const k=(y*w+x)*4,l=d[k]*.299+d[k+1]*.587+d[k+2]*.114;
+        if(l>mx)mx=l;
+      }
+    bg[j*cx+i]=Math.max(70,mx);
+  }
+  const at=(i,j)=>bg[Math.min(cy-1,Math.max(0,j))*cx+Math.min(cx-1,Math.max(0,i))];
+  const LO=42,HI=232;
+  for(let y=0;y<h;y++){
+    const fy=y/cell-0.5,j=Math.floor(fy),ty=fy-j;
+    for(let x=0;x<w;x++){
+      const fx=x/cell-0.5,i=Math.floor(fx),tx=fx-i;
+      const b=at(i,j)*(1-tx)*(1-ty)+at(i+1,j)*tx*(1-ty)+at(i,j+1)*(1-tx)*ty+at(i+1,j+1)*tx*ty;
+      const k=(y*w+x)*4;
+      const l=(d[k]*.299+d[k+1]*.587+d[k+2]*.114)*255/b;
+      let v=(l-LO)*255/(HI-LO);
+      v=v<0?0:v>255?255:v;
+      d[k]=d[k+1]=d[k+2]=v;
+    }
+  }
+  g.putImageData(im,0,0);
+  return o;
+}
+// 모든 쪽을 같은 크기 종이에 얹음
+function unify(list){
+  const ws=list.map(c=>c.width).slice().sort((a,b)=>a-b);
+  const hs=list.map(c=>c.height).slice().sort((a,b)=>a-b);
+  const W=Math.round(ws[ws.length>>1]),H=Math.round(hs[hs.length>>1]);
+  return list.map(c=>{
+    if(c.width===W&&c.height===H)return c;
+    const o=document.createElement("canvas");o.width=W;o.height=H;
+    const g=o.getContext("2d");
+    g.fillStyle="#fff";g.fillRect(0,0,W,H);
+    const s=Math.min(W/c.width,H/c.height);
+    const dw=c.width*s,dh=c.height*s;
+    g.drawImage(c,(W-dw)/2,(H-dh)/2,dw,dh);
+    return o;
+  });
+}
+
+async function derive(sheets){
+  const raw=[];
+  for(let si=0;si<sheets.length;si++){
+    const cv=sheets[si];
     const rows=S.opt.seg?segments(cv):[[0,cv.height]];
-    rows.forEach(([a,b])=>{
-      const strip=cut(cv,{x:0,y:a,w:cv.width,h:b-a});
+    for(let ri=0;ri<rows.length;ri++){
+      const [a,b]=rows[ri];
+      let strip=cut(cv,{x:0,y:a,w:cv.width,h:b-a});
+      if(S.opt.deskew)strip=deskew(strip);
       const halves=[];
       if(S.opt.split&&strip.width>strip.height*0.95){
         const p=Math.round(strip.width*S.opt.pos/100);
         halves.push(cut(strip,{x:0,y:0,w:p,h:strip.height}));
         halves.push(cut(strip,{x:p,y:0,w:strip.width-p,h:strip.height}));
       }else halves.push(strip);
-      halves.forEach(h=>{
-        const fin=S.opt.trim?cut(h,trimBox(h)):h;
-        pages.push({url:fin.toDataURL("image/jpeg",0.82),w:fin.width,h:fin.height});
-      });
-    });
-  });
-  return pages;
+      for(const hf of halves){
+        let fin=S.opt.trim?cut(hf,trimBox(hf)):hf;
+        if(S.opt.even)fin=flatten(fin);
+        raw.push(fin);
+      }
+      prog(0.5+0.45*((si+(ri+1)/rows.length)/sheets.length));
+      await tick();
+    }
+  }
+  const fin=(S.opt.same&&raw.length>1)?unify(raw):raw;
+  const out=[];
+  for(const c of fin){
+    out.push({url:c.toDataURL("image/jpeg",0.84),w:c.width,h:c.height});
+    await tick();
+  }
+  prog(1);
+  return out;
 }
 
 /* ───────── 불러오기 ───────── */
@@ -752,7 +859,7 @@ async function handleFiles(files,append){
   }
   if(!sheets.length){work(false);toast("읽을 수 있는 파일이 없습니다");return}
   S.sheets=append?S.sheets.concat(sheets):sheets;
-  const pages=derive(sheets);
+  const pages=await derive(sheets);
   prog(1);
   S.pages=append?S.pages.concat(pages):pages;
   if(!append){S.idx=0;S.marks.clear()}
@@ -948,12 +1055,16 @@ function sw(id,key){
   el.onclick=()=>{S.opt[key]=!S.opt[key];el.classList.toggle("on",S.opt[key]);saveMeta()};
 }
 sw("#swSplit","split");sw("#swSeg","seg");sw("#swTrim","trim");
+sw("#swSame","same");sw("#swSkew","deskew");sw("#swEven","even");
 $("#splitPos").oninput=e=>{S.opt.pos=+e.target.value};
 $("#contrast").oninput=e=>{S.opt.contrast=+e.target.value;render()};
 function syncOpt(){
   $("#swSplit").classList.toggle("on",S.opt.split);
   $("#swSeg").classList.toggle("on",S.opt.seg);
   $("#swTrim").classList.toggle("on",S.opt.trim);
+  $("#swSame").classList.toggle("on",S.opt.same);
+  $("#swSkew").classList.toggle("on",S.opt.deskew);
+  $("#swEven").classList.toggle("on",S.opt.even);
   $("#splitPos").value=S.opt.pos;$("#contrast").value=S.opt.contrast;
 }
 $("#recut").onclick=async()=>{
@@ -961,7 +1072,7 @@ $("#recut").onclick=async()=>{
   work(true,"다시 자르는 중");
   await new Promise(r=>setTimeout(r,30));
   const keep=S.idx/Math.max(1,S.pages.length);
-  S.pages=derive(S.sheets);S.marks.clear();
+  S.pages=await derive(S.sheets);S.marks.clear();
   S.idx=Math.min(S.pages.length-1,Math.round(keep*S.pages.length));
   S.saved=false;work(false);mount();closeAll();toast("다시 잘랐습니다");
 };
