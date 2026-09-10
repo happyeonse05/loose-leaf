@@ -447,9 +447,14 @@
         <span id="ocrState">스캔 글씨가 깨져 보일 때, 글자를 읽어내 본문처럼 보여줍니다</span></div>
       <input type="range" id="txtSize" min="14" max="26" value="17">
     </div>
+    <div class="row"><div class="lab"><b>정확도 우선</b><span>한 쪽을 세 가지 방식으로 읽어 가장 잘 읽힌 줄만 골라 씁니다 (3배 느림)</span></div><div class="sw on" id="swMulti"></div></div>
     <div class="actions">
       <button class="btn ghost" id="ocrOne">이 쪽만 변환</button>
       <button class="btn" id="ocrAll">전체 변환</button>
+    </div>
+    <div class="actions">
+      <button class="btn ghost" id="setPdf">PDF로 내보내기</button>
+      <button class="btn ghost" id="setTxt">글자 파일로</button>
     </div>
     <div class="actions">
       <button class="btn ghost" id="addMore">쪽 더 넣기</button>
@@ -473,7 +478,7 @@ const S={
   sheets:[],           // 원본 캔버스 (세션 한정)
   idx:0,
   marks:new Map(),     // idx -> note
-  opt:{split:true,seg:true,trim:true,pos:50,contrast:128,same:true,deskew:true,even:true,txtSize:17},
+  opt:{split:true,seg:true,trim:true,pos:50,contrast:128,same:true,deskew:true,even:true,txtSize:17,multi:true},
   zoom:1,pan:{x:0,y:0},
   saved:false,
   id:null,             // 현재 책 id
@@ -1102,7 +1107,7 @@ function sw(id,key){
   el.onclick=()=>{S.opt[key]=!S.opt[key];el.classList.toggle("on",S.opt[key]);saveMeta()};
 }
 sw("#swSplit","split");sw("#swSeg","seg");sw("#swTrim","trim");
-sw("#swSame","same");sw("#swSkew","deskew");sw("#swEven","even");
+sw("#swSame","same");sw("#swSkew","deskew");sw("#swEven","even");sw("#swMulti","multi");
 $("#splitPos").oninput=e=>{S.opt.pos=+e.target.value};
 $("#contrast").oninput=e=>{S.opt.contrast=+e.target.value;render()};
 function syncOpt(){
@@ -1112,6 +1117,7 @@ function syncOpt(){
   $("#swSame").classList.toggle("on",S.opt.same);
   $("#swSkew").classList.toggle("on",S.opt.deskew);
   $("#swEven").classList.toggle("on",S.opt.even);
+  $("#swMulti").classList.toggle("on",S.opt.multi!==false);
   $("#splitPos").value=S.opt.pos;$("#contrast").value=S.opt.contrast;
   $("#txtSize").value=S.opt.txtSize||17;
 }
@@ -1162,6 +1168,61 @@ function clean(t){
     .replace(/([가-힣])\s+([,.。、!?])/g,"$1$2")
     .trim();
 }
+function imgFrom(url){return new Promise((res,rej)=>{const i=new Image();i.onload=()=>res(i);i.onerror=rej;i.src=url})}
+// 같은 쪽을 원본 / 확대 / 이진화 세 가지로 만들어 각각 읽힘
+async function variants(url){
+  const im=await imgFrom(url),w=im.naturalWidth,h=im.naturalHeight;
+  const out=[url];
+  const sc=Math.min(2,2600/Math.max(w,h));
+  if(sc>1.1){
+    const c=document.createElement("canvas");c.width=Math.round(w*sc);c.height=Math.round(h*sc);
+    const g=c.getContext("2d");g.imageSmoothingQuality="high";
+    g.fillStyle="#fff";g.fillRect(0,0,c.width,c.height);
+    g.drawImage(im,0,0,c.width,c.height);
+    out.push(c.toDataURL("image/png"));
+  }
+  const c2=document.createElement("canvas");c2.width=w;c2.height=h;
+  const g2=c2.getContext("2d");g2.drawImage(im,0,0);
+  const d=g2.getImageData(0,0,w,h),a=d.data;
+  let sum=0,n=0;
+  for(let i=0;i<a.length;i+=40){sum+=a[i];n++}
+  const th=Math.max(110,Math.min(200,sum/n-42));
+  for(let i=0;i<a.length;i+=4){
+    const v=(a[i]*.299+a[i+1]*.587+a[i+2]*.114)<th?0:255;
+    a[i]=a[i+1]=a[i+2]=v;
+  }
+  g2.putImageData(d,0,0);
+  out.push(c2.toDataURL("image/png"));
+  return out;
+}
+const GOOD=/[가-힣a-zA-Z0-9.,·、。“”"'()\[\]!?%\-—:;一-龥\s]/;
+function quality(t){
+  if(!t)return 0;
+  let g=0;for(const ch of t)if(GOOD.test(ch))g++;
+  return g/Math.max(1,t.length);
+}
+function bestLines(res){
+  const sets=res.map(r=>r.text.split(/\n/).map(x=>x.trim()).filter(Boolean));
+  const L=sets[0]?sets[0].length:0;
+  if(L>2&&sets.every(x=>x.length===L)){
+    const out=[];
+    for(let i=0;i<L;i++){
+      let bl=sets[0][i],bs=-1;
+      sets.forEach(x=>{
+        const q=quality(x[i])*100+Math.min(20,x[i].length*0.3);
+        if(q>bs){bs=q;bl=x[i]}
+      });
+      out.push(bl);
+    }
+    return out.join("\n");
+  }
+  let bt=res[0].text,bs=-1;
+  res.forEach(r=>{
+    const sc=quality(r.text)*100+(r.conf||0)*0.45+Math.min(25,r.text.length*0.02);
+    if(sc>bs){bs=sc;bt=r.text}
+  });
+  return bt;
+}
 async function ocrRange(list,label){
   if(!S.pages.length){toast("먼저 쪽을 넣어주세요");return}
   work(true,label);
@@ -1170,8 +1231,18 @@ async function ocrRange(list,label){
     for(let n=0;n<list.length;n++){
       const i=list[n];
       $("#workMsg").textContent=label+" ("+(n+1)+"/"+list.length+")";
-      const r=await w.recognize(S.pages[i].url);
-      S.texts[i]=clean(r.data.text);
+      if(S.opt.multi!==false){
+        const vs=await variants(S.pages[i].url),res=[];
+        for(let v=0;v<vs.length;v++){
+          $("#workMsg").textContent=label+" ("+(n+1)+"/"+list.length+") · "+(v+1)+"번째 읽기";
+          const r=await w.recognize(vs[v]);
+          res.push({text:clean(r.data.text),conf:r.data.confidence||0});
+        }
+        S.texts[i]=clean(bestLines(res));
+      }else{
+        const r=await w.recognize(S.pages[i].url);
+        S.texts[i]=clean(r.data.text);
+      }
       prog((n+1)/list.length);
     }
     work(false);
@@ -1247,6 +1318,8 @@ function exportTxt(){
 }
 $("#expPdf").onclick=()=>{closeAll();exportPdf()};
 $("#expTxt").onclick=()=>{closeAll();exportTxt()};
+$("#setPdf").onclick=()=>{closeAll();exportPdf()};
+$("#setTxt").onclick=()=>{closeAll();exportTxt()};
 
 /* ───────── 계정 · 동기화 (Supabase REST) ───────── */
 // 배포한 뒤 아래 두 줄을 채우거나, 앱 안 "설정 → 계정 → 서버 연결 설정"에서 넣어도 됩니다.
