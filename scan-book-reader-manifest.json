@@ -1,0 +1,23 @@
+{
+  "name": "낱장 — 스캔본 리더",
+  "short_name": "낱장",
+  "start_url": "./scan-book-reader.html",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#16140f",
+  "theme_color": "#16140f",
+  "orientation": "portrait",
+  "icons": [
+    {
+      "src": "scan-book-reader-icon-180.png",
+      "sizes": "180x180",
+      "type": "image/png"
+    },
+    {
+      "src": "scan-book-reader-icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}
