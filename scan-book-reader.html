@@ -397,6 +397,11 @@
     <div class="actions">
       <button class="btn" id="bookSave">책장에 넣기</button>
     </div>
+    <div class="actions" style="border-top:1px solid rgba(255,255,255,.06);padding-top:14px;margin-top:14px">
+      <button class="btn ghost" id="expPdf">PDF로 내보내기</button>
+      <button class="btn ghost" id="expTxt">글자 파일로</button>
+    </div>
+    <p class="hint" style="text-align:left;padding:8px 0 0">아이폰에서는 새 탭으로 열립니다. 공유 버튼 → “파일에 저장”을 누르세요.</p>
   </div>
 </div>
 
@@ -1193,6 +1198,55 @@ $("#mode").onclick=()=>{
   if(S.view==="img"&&!S.texts.some(t=>t)){toast("먼저 설정에서 글자로 변환해 주세요");open$("#pSet");return}
   S.view=S.view==="img"?"txt":"img";S.zoom=1;S.pan={x:0,y:0};render();
 };
+
+/* ───────── 파일로 내보내기 ───────── */
+function saveBlob(blob,name){
+  const u=URL.createObjectURL(blob),a=document.createElement("a");
+  a.href=u;a.download=name;a.rel="noopener";
+  document.body.appendChild(a);a.click();a.remove();
+  setTimeout(()=>URL.revokeObjectURL(u),4000);
+}
+function safeName(){return (S.title||"낱장").replace(/[\\/:*?"<>|]/g,"_").slice(0,60)}
+
+async function exportPdf(){
+  if(!S.pages.length){toast("먼저 쪽을 넣어주세요");return}
+  work(true,"PDF 만드는 중");
+  try{
+    if(!window.jspdf){
+      await new Promise((res,rej)=>{
+        const el=document.createElement("script");
+        el.src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js";
+        el.onload=res;el.onerror=()=>rej(new Error("PDF 도구를 못 불러왔습니다"));
+        document.head.appendChild(el);
+      });
+    }
+    const {jsPDF}=window.jspdf;
+    const list=S.cover?[{url:S.cover,w:600,h:840}].concat(S.pages):S.pages.slice();
+    let doc=null;
+    for(let i=0;i<list.length;i++){
+      const p=list[i];
+      const w=p.w||600,h=p.h||840;
+      const or=w>h?"l":"p";
+      if(!doc)doc=new jsPDF({unit:"px",format:[w,h],orientation:or,compress:true});
+      else doc.addPage([w,h],or);
+      doc.addImage(p.url,"JPEG",0,0,w,h,undefined,"FAST");
+      prog((i+1)/list.length);
+      await tick();
+    }
+    saveBlob(doc.output("blob"),safeName()+".pdf");
+    work(false);toast("PDF로 내보냈습니다");
+  }catch(e){work(false);toast(e.message||"PDF 만들기에 실패했습니다")}
+}
+
+function exportTxt(){
+  const has=S.texts.some(t=>t);
+  if(!has){toast("먼저 글자로 변환해 주세요");return}
+  const body=S.pages.map((_,i)=>"— "+(i+1)+"쪽 —\n"+(S.texts[i]||"(변환 안 됨)")).join("\n\n");
+  saveBlob(new Blob([(S.title||"낱장")+"\n\n"+body],{type:"text/plain;charset=utf-8"}),safeName()+".txt");
+  toast("글자 파일로 내보냈습니다");
+}
+$("#expPdf").onclick=()=>{closeAll();exportPdf()};
+$("#expTxt").onclick=()=>{closeAll();exportTxt()};
 
 /* ───────── 계정 · 동기화 (Supabase REST) ───────── */
 // 배포한 뒤 아래 두 줄을 채우거나, 앱 안 "설정 → 계정 → 서버 연결 설정"에서 넣어도 됩니다.
