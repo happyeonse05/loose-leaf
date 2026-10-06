@@ -875,13 +875,12 @@ function grayOf(cv,W){
   for(let i=0,p=0;i<d.length;i+=4,p++)g[p]=d[i]*.299+d[i+1]*.587+d[i+2]*.114;
   return {g,W,H};
 }
-// 글줄이 가장 반듯해지는 각도를 찾아 되돌림
+// 글줄이 가장 반듯해지는 각도를 찾아 되돌림 (쪽마다 따로, 0.1° 단위, 확신 없으면 안 돌림)
 function deskew(cv){
-  const {g,W,H}=grayOf(cv,420);
+  const {g,W,H}=grayOf(cv,640);
   const ink=new Uint8Array(W*H);
   for(let i=0;i<g.length;i++)ink[i]=g[i]<175?1:0;
-  let best=0,bs=-1;
-  for(let deg=-3;deg<=3.001;deg+=0.4){
+  const score=deg=>{
     const t=Math.tan(deg*Math.PI/180),prof=new Float32Array(H);
     for(let x=0;x<W;x++){
       const dy=Math.round((x-W/2)*t);
@@ -891,15 +890,21 @@ function deskew(cv){
       }
     }
     let sc=0;for(let y=1;y<H;y++){const d=prof[y]-prof[y-1];sc+=d*d}
-    if(sc>bs){bs=sc;best=deg}
-  }
-  if(Math.abs(best)<0.45)return cv;
+    return sc;
+  };
+  const s0=score(0);
+  let best=0,bs=s0;
+  for(let deg=-4;deg<=4.001;deg+=0.5){if(Math.abs(deg)<1e-6)continue;const sc=score(deg);if(sc>bs){bs=sc;best=deg}}
+  const c0=best;
+  for(let deg=c0-0.5;deg<=c0+0.501;deg+=0.1){const sc=score(deg);if(sc>bs){bs=sc;best=deg}}
+  if(Math.abs(best)<0.2||bs<s0*1.04)return cv;
   const r=-best*Math.PI/180;
   const w=cv.width,h=cv.height;
   const nw=Math.ceil(Math.abs(w*Math.cos(r))+Math.abs(h*Math.sin(r)));
   const nh=Math.ceil(Math.abs(w*Math.sin(r))+Math.abs(h*Math.cos(r)));
   const o=document.createElement("canvas");o.width=nw;o.height=nh;
   const c=o.getContext("2d");
+  c.imageSmoothingEnabled=true;c.imageSmoothingQuality="high";
   c.fillStyle="#fff";c.fillRect(0,0,nw,nh);
   c.translate(nw/2,nh/2);c.rotate(r);c.drawImage(cv,-w/2,-h/2);
   return o;
@@ -964,14 +969,14 @@ async function derive(sheets){
     for(let ri=0;ri<rows.length;ri++){
       const [a,b]=rows[ri];
       let strip=cut(cv,{x:0,y:a,w:cv.width,h:b-a});
-      if(S.opt.deskew)strip=deskew(strip);
       const halves=[];
       if(S.opt.split&&strip.width>strip.height*0.95){
         const p=Math.round(strip.width*S.opt.pos/100);
         halves.push(cut(strip,{x:0,y:0,w:p,h:strip.height}));
         halves.push(cut(strip,{x:p,y:0,w:strip.width-p,h:strip.height}));
       }else halves.push(strip);
-      for(const hf of halves){
+      for(let hf of halves){
+        if(S.opt.deskew)hf=deskew(hf);
         let fin=S.opt.trim?cut(hf,trimBox(hf)):hf;
         if(S.opt.even)fin=flatten(fin);
         raw.push(fin);
