@@ -494,7 +494,7 @@
       <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="var(--muted)" stroke-width="1.6"><path d="M9 5l7 7-7 7"/></svg></div>
     <div class="row"><div class="lab"><b>펼침면 좌우 분할</b><span>한 장에 두 쪽이 들어있는 스캔을 반으로 자릅니다</span></div><div class="sw on" id="swSplit"></div></div>
     <div class="row"><div class="lab"><b>긴 스크린샷 자동 분리</b><span>세로로 이어진 캡처에서 펼침면마다 잘라냅니다</span></div><div class="sw on" id="swSeg"></div></div>
-    <div class="row"><div class="lab"><b>쪽 크기 통일</b><span>모든 쪽을 같은 크기로 맞춰 넘길 때 흔들리지 않게 합니다</span></div><div class="sw on" id="swSame"></div></div>
+    <div class="row"><div class="lab"><b>쪽 크기 통일</b><span>어떻게 잘렸든 모든 쪽의 글자 크기를 같게 맞춥니다</span></div><div class="sw on" id="swSame"></div></div>
     <div class="row"><div class="lab"><b>기울기 자동 보정</b><span>비뚤게 찍힌 쪽의 글줄을 수평으로 돌려놓습니다</span></div><div class="sw on" id="swSkew"></div></div>
     <div class="row"><div class="lab"><b>밝기 고르게</b><span>한쪽만 흐린 복사본의 명암을 평평하게 폅니다</span></div><div class="sw on" id="swEven"></div></div>
     <div class="row"><div class="lab"><b>여백 잘라내기</b><span>흰 테두리를 없애 글씨를 크게 봅니다</span></div><div class="sw on" id="swTrim"></div></div>
@@ -945,18 +945,37 @@ function flatten(cv){
   return o;
 }
 // 모든 쪽을 같은 크기 종이에 얹음
+// 쪽마다 글줄 높이를 재서 글자 크기가 같아지게 배율을 맞춤 (어떻게 잘렸든 상관없이)
+function lineH(c){
+  const {g,W,H}=grayOf(c,500),k=c.width/W;
+  const runs=[];let run=0;
+  for(let y=0;y<H;y++){
+    let n=0;for(let x=0;x<W;x++)if(g[y*W+x]<160)n++;
+    if(n>W*0.006)run++;else{if(run>=2)runs.push(run);run=0}
+  }
+  if(run>=2)runs.push(run);
+  if(runs.length<3)return 0;
+  runs.sort((a,b)=>a-b);
+  const m=runs[runs.length>>1];
+  const ok=runs.filter(r=>r>=m*0.5&&r<=m*1.8);
+  return (ok.length?ok[ok.length>>1]:m)*k;
+}
 function unify(list){
-  const ws=list.map(c=>c.width).slice().sort((a,b)=>a-b);
-  const hs=list.map(c=>c.height).slice().sort((a,b)=>a-b);
-  const W=Math.round(ws[ws.length>>1]),H=Math.round(hs[hs.length>>1]);
-  return list.map(c=>{
-    if(c.width===W&&c.height===H)return c;
+  const lh=list.map(lineH);
+  const v=lh.filter(x=>x>0).sort((a,b)=>a-b);
+  const T=v.length?v[v.length>>1]:0;
+  let sc=list.map((c,i)=>(T&&lh[i])?Math.max(0.6,Math.min(1.7,T/lh[i])):1);
+  let W=Math.max(...list.map((c,i)=>c.width*sc[i]));
+  let H=Math.max(...list.map((c,i)=>c.height*sc[i]));
+  const cap=Math.min(1,1800/Math.max(W,H));
+  sc=sc.map(x=>x*cap);W=Math.round(W*cap);H=Math.round(H*cap);
+  return list.map((c,i)=>{
     const o=document.createElement("canvas");o.width=W;o.height=H;
     const g=o.getContext("2d");
+    g.imageSmoothingEnabled=true;g.imageSmoothingQuality="high";
     g.fillStyle="#fff";g.fillRect(0,0,W,H);
-    const s=Math.min(W/c.width,H/c.height);
-    const dw=c.width*s,dh=c.height*s;
-    g.drawImage(c,(W-dw)/2,(H-dh)/2,dw,dh);
+    const dw=c.width*sc[i],dh=c.height*sc[i];
+    g.drawImage(c,(W-dw)/2,Math.min((H-dh)/2,H*0.03),dw,dh);
     return o;
   });
 }
