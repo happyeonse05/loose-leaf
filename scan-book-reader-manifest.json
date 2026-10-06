@@ -1,7 +1,7 @@
 {
   "name": "낱장 — 스캔본 리더",
   "short_name": "낱장",
-  "start_url": "./scan-book-reader.html",
+  "start_url": "./",
   "scope": "./",
   "display": "standalone",
   "background_color": "#16140f",
